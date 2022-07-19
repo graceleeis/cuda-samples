@@ -180,7 +180,7 @@ inline bool getCmdLineArgumentValue(const int argc, const char **argv,
 inline int getCmdLineArgumentInt(const int argc, const char **argv,
                                  const char *string_ref) {
   bool bFound = false;
-  int value = -1;
+  long long value = -1;
 
   if (argc >= 1) {
     for (int i = 1; i < argc; i++) {
@@ -191,10 +191,10 @@ inline int getCmdLineArgumentInt(const int argc, const char **argv,
       if (!STRNCASECMP(string_argv, string_ref, length)) {
         if (length + 1 <= static_cast<int>(strlen(string_argv))) {
           int auto_inc = (string_argv[length] == '=') ? 1 : 0;
-          value = atoi(&string_argv[length + auto_inc]);
+          value = atoll(&string_argv[length + auto_inc]);
         } else {
           value = 0;
-        }
+        }git 
 
         bFound = true;
         continue;
