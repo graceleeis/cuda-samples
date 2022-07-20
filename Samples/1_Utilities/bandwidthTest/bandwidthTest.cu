@@ -53,6 +53,8 @@ static const char *sSDKsample = "CUDA Bandwidth Test";
 // defines, project
 #define MEMCOPY_ITERATIONS 100
 #define DEFAULT_SIZE (32 * (1e6))      // 32 M
+#define XR_STAGE_SIZE (1 * (1e9))     // 1 G
+const unsigned long long int XR_STAGE_SIZE_BYTES = XR_STAGE_SIZE;
 #define DEFAULT_INCREMENT (4 * (1e6))  // 4 M
 #define CACHE_CLEAR_SIZE (16 * (1e6))  // 16 M
 
@@ -81,12 +83,13 @@ char *flush_buf;
 enum testMode { QUICK_MODE, RANGE_MODE, SHMOO_MODE };
 enum memcpyKind { DEVICE_TO_HOST, HOST_TO_DEVICE, DEVICE_TO_DEVICE };
 enum printMode { USER_READABLE, CSV };
-enum memoryMode { PINNED, PAGEABLE };
+enum memoryMode { PINNED, PAGEABLE, HALFPIN};
 
 const char *sMemoryCopyKind[] = {"Device to Host", "Host to Device",
                                  "Device to Device", NULL};
 
-const char *sMemoryMode[] = {"PINNED", "PAGEABLE", NULL};
+// const char *sMemoryMode[] = {"PINNED", "PAGEABLE", NULL};
+const char *sMemoryMode[] = {"PINNED", "PAGEABLE", "HALFPIN", NULL};
 
 // if true, use CPU based timing for everything
 static bool bDontUseGPUTiming;
@@ -188,7 +191,9 @@ int runTest(const int argc, const char **argv) {
       memMode = PAGEABLE;
     } else if (strcmp(memModeStr, "pinned") == 0) {
       memMode = PINNED;
-    } else {
+    } else if (strcmp(memModeStr, "halfpin") == 0){
+      memMode = HALFPIN;
+    }else {
       printf("Invalid memory mode - valid modes are pageable or pinned\n");
       printf("See --help for more information\n");
       return -1000;
@@ -581,6 +586,7 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   float bandwidthInGBs = 0.0f;
   unsigned char *h_idata = NULL;
   unsigned char *h_odata = NULL;
+  unsigned char *xr_stage_area = NULL;
   cudaEvent_t start, stop;
   cudaEvent_t xr_pin_start, xr_pin_stop;
 
@@ -607,6 +613,11 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
     checkCudaErrors(cudaMallocHost((void **)&h_idata, memSize));
     checkCudaErrors(cudaMallocHost((void **)&h_odata, memSize));
 #endif
+  } else if (HALFPIN == memMode) {
+    // unpinned memory mode - use regular cudaMalloc
+    checkCudaErrors(cudaMallocHost((void **)&h_idata, memSize));
+    h_odata = (unsigned char *)malloc(memSize);
+    checkCudaErrors(cudaMallocHost((void **)&xr_stage_area, XR_STAGE_SIZE_BYTES));
   } else {
     // pageable memory mode - use malloc
     h_idata = (unsigned char *)malloc(memSize);
@@ -647,6 +658,28 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
       elapsedTimeInMs = sdkGetTimerValue(&timer);
       sdkResetTimer(&timer);
     }
+  } else if (HALFPIN == memMode){
+    if (bDontUseGPUTiming) sdkStartTimer(&timer);
+    checkCudaErrors(cudaEventRecord(start, 0));
+    unsigned long long int xr_last_memory = memSize;
+    for (unsigned long long int i = 0; i < MEMCOPY_ITERATIONS; i++) {
+      for(unsigned long long int j = 0; j < memSize / XR_STAGE_SIZE_BYTES; j++){
+          checkCudaErrors(cudaMemcpyAsync(xr_stage_area, d_idata, XR_STAGE_SIZE_BYTES,
+            cudaMemcpyDeviceToHost, 0));
+          checkCudaErrors(cudaMemcpyAsync(h_odata, xr_stage_area, XR_STAGE_SIZE_BYTES,
+            cudaMemcpyHostToHost, 0));
+          d_idata += XR_STAGE_SIZE_BYTES;
+          h_odata += XR_STAGE_SIZE_BYTES;
+          xr_last_memory -= XR_STAGE_SIZE_BYTES;
+      }
+      checkCudaErrors(cudaMemcpyAsync(xr_stage_area, d_idata, xr_last_memory,
+        cudaMemcpyDeviceToHost, 0));
+      checkCudaErrors(cudaMemcpyAsync(h_odata, xr_stage_area, xr_last_memory,
+        cudaMemcpyHostToHost, 0));
+      checkCudaErrors(cudaEventRecord(stop, 0));
+      checkCudaErrors(cudaDeviceSynchronize());
+      checkCudaErrors(cudaEventElapsedTime(&elapsedTimeInMs, start, stop));
+    }
   } else {
     elapsedTimeInMs = 0;
     for (unsigned long long int i = 0; i < MEMCOPY_ITERATIONS; i++) {
@@ -672,6 +705,10 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   if (PINNED == memMode) {
     checkCudaErrors(cudaFreeHost(h_idata));
     checkCudaErrors(cudaFreeHost(h_odata));
+  } else if (HALFPIN == memMode) {
+    checkCudaErrors(cudaFreeHost(h_idata));
+    free(h_odata);
+    checkCudaErrors(cudaFreeHost(xr_stage_area));
   } else {
     free(h_idata);
     free(h_odata);
