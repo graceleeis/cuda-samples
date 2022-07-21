@@ -38,6 +38,8 @@
 // CUDA runtime
 #include <cuda_runtime.h>
 
+#include <cstdio>
+
 // includes
 #include <helper_cuda.h>  // helper functions for CUDA error checking and initialization
 #include <helper_functions.h>  // helper for shared functions common to CUDA Samples
@@ -587,8 +589,10 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   unsigned char *h_idata = NULL;
   unsigned char *h_odata = NULL;
   unsigned char *xr_stage_area = NULL;
+  // unsigned char *xr_first_host_address = NULL;
   cudaEvent_t start, stop;
   cudaEvent_t xr_pin_start, xr_pin_stop;
+  FILE * xr_file  = NULL;
 
   sdkCreateTimer(&timer);
   checkCudaErrors(cudaEventCreate(&start));
@@ -616,7 +620,8 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   } else if (HALFPIN == memMode) {
     // unpinned memory mode - use regular cudaMalloc
     checkCudaErrors(cudaMallocHost((void **)&h_idata, memSize));
-    h_odata = (unsigned char *)malloc(memSize);
+    // h_odata = (unsigned char *)malloc(memSize);
+    xr_file = fopen("/tmp/half_pin.txt", "w");
     checkCudaErrors(cudaMallocHost((void **)&xr_stage_area, XR_STAGE_SIZE_BYTES));
   } else {
     // pageable memory mode - use malloc
@@ -642,6 +647,8 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   checkCudaErrors(
       cudaMemcpy(d_idata, h_idata, memSize, cudaMemcpyHostToDevice));
 
+  unsigned char *xr_first_device_address = d_idata;
+
   // copy data from GPU to Host
   if (PINNED == memMode) {
     if (bDontUseGPUTiming) sdkStartTimer(&timer);
@@ -661,21 +668,26 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
   } else if (HALFPIN == memMode){
     if (bDontUseGPUTiming) sdkStartTimer(&timer);
     checkCudaErrors(cudaEventRecord(start, 0));
-    unsigned long long int xr_last_memory = memSize;
+    // xr_first_host_address = h_odata;
     for (unsigned long long int i = 0; i < MEMCOPY_ITERATIONS; i++) {
+      d_idata = xr_first_device_address;
+      // h_odata = xr_first_host_address;
+      unsigned long long int xr_last_memory = memSize;
       for(unsigned long long int j = 0; j < memSize / XR_STAGE_SIZE_BYTES; j++){
-          checkCudaErrors(cudaMemcpyAsync(xr_stage_area, d_idata, XR_STAGE_SIZE_BYTES,
-            cudaMemcpyDeviceToHost, 0));
-          checkCudaErrors(cudaMemcpyAsync(h_odata, xr_stage_area, XR_STAGE_SIZE_BYTES,
-            cudaMemcpyHostToHost, 0));
+          checkCudaErrors(cudaMemcpy(xr_stage_area, d_idata, XR_STAGE_SIZE_BYTES,
+            cudaMemcpyDeviceToHost));
+          fwrite(xr_stage_area, XR_STAGE_SIZE_BYTES, 1, xr_file);
+          // checkCudaErrors(cudaMemcpy(h_odata, xr_stage_area, XR_STAGE_SIZE_BYTES,
+          //   cudaMemcpyHostToHost));
           d_idata += XR_STAGE_SIZE_BYTES;
-          h_odata += XR_STAGE_SIZE_BYTES;
+          // h_odata += XR_STAGE_SIZE_BYTES;
           xr_last_memory -= XR_STAGE_SIZE_BYTES;
       }
-      checkCudaErrors(cudaMemcpyAsync(xr_stage_area, d_idata, xr_last_memory,
-        cudaMemcpyDeviceToHost, 0));
-      checkCudaErrors(cudaMemcpyAsync(h_odata, xr_stage_area, xr_last_memory,
-        cudaMemcpyHostToHost, 0));
+      checkCudaErrors(cudaMemcpy(xr_stage_area, d_idata, xr_last_memory,
+        cudaMemcpyDeviceToHost));
+      fwrite(xr_stage_area, xr_last_memory, 1, xr_file);
+      // checkCudaErrors(cudaMemcpy(h_odata, xr_stage_area, xr_last_memory,
+      //   cudaMemcpyHostToHost));
       checkCudaErrors(cudaEventRecord(stop, 0));
       checkCudaErrors(cudaDeviceSynchronize());
       checkCudaErrors(cudaEventElapsedTime(&elapsedTimeInMs, start, stop));
@@ -707,14 +719,15 @@ float testDeviceToHostTransfer(unsigned long long int memSize, memoryMode memMod
     checkCudaErrors(cudaFreeHost(h_odata));
   } else if (HALFPIN == memMode) {
     checkCudaErrors(cudaFreeHost(h_idata));
-    free(h_odata);
+    // free(xr_first_host_address);
+    fclose(xr_file);
     checkCudaErrors(cudaFreeHost(xr_stage_area));
   } else {
     free(h_idata);
     free(h_odata);
   }
 
-  checkCudaErrors(cudaFree(d_idata));
+  checkCudaErrors(cudaFree(xr_first_device_address));
 
   return bandwidthInGBs;
 }
